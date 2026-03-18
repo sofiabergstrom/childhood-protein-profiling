@@ -1,0 +1,2042 @@
+---
+title: "Longitudinal protein profiling of blood during childhood into early adulthood"
+output: html_document
+author: "Sofia Bergström and Simon Kebede Merid"
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+editor_options: 
+  chunk_output_type: console
+---
+
+# Set up
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F)
+
+knitr::opts_knit$set(root.dir = "../")
+```
+
+
+## Load packages
+```{r}
+
+library(ggpubr) 
+library(ggbeeswarm)
+library(tidyverse)
+require(gridExtra)
+library(ggvenn)
+library(FactoMineR) 
+library(factoextra) 
+library(NbClust) 
+library(cluster) 
+library(patchwork)
+library(tidymodels)
+library(embed)
+library(ggridges) 
+library(ggrepel) 
+library(readxl)
+library(writexl)
+library(fpc)
+library(doParallel)
+library(foreach)
+library(corrplot)
+library(UpSetR) 
+library(clusterProfiler) 
+library(org.Hs.eg.db) 
+library(grid)
+library(png)
+library(lme4)     
+library(lmerTest) 
+library(pbkrtest) 
+library(parallel)
+library(irr)
+library(readr)
+mutate <- dplyr::mutate
+select <- dplyr::select
+rename <- dplyr::rename
+
+```
+
+
+```{r}
+# Selected cutoff
+p_value_cutoff <-  0.05
+fc_cutoff <- 0.5
+
+# Colors
+col_F <-"#ECAA2F"
+col_M <- "#9B8FCC"  
+
+col_4 <- "#79A490" 
+col_8 <- "#B1DDF1" 
+col_16 <- "#8E4C74"
+col_24 <- "#1B73B1"
+
+col_protein <-"#D3D3D3"
+col_protein_down <-"#FAF3B3" 
+col_protein_up <- "#F2E040" 
+col_protein_ns <- "#D3D3D3"
+col_upset <- "#8F8F8F"
+
+# Prepare for output
+if (!dir.exists("output")) {dir.create("output")}
+suppdata <- list()
+supptables <- list()
+```
+
+## Load data
+```{r}
+# Olink data in long format, one row per sample and assay. Includes daid (sampleid), OlinkID, UniProt, Assay, NPX, LOD, Gene_desc (long gene names), subject_id, follow_up, age and sex
+BAMSE_data <- read_csv2("data/data_after_qc/BAMSE_data.csv")|> 
+  mutate(subject_id = as.character(subject_id))|> 
+  mutate(across(c(sex, follow_up), as.factor))
+
+# Extra clinical data, one row per subject_id. Includes bmi z-scores per follow-up, body fat percentage at follow-up 24, snuff and smoke usage at follow-up 16 and 24, and blood cell counts at follow-up 16 and 24. 
+extra_meta_data <- read_csv2("data/clinical/extra_clinical_data.csv")|> 
+  mutate(subject_id = as.character(subject_id))
+```
+
+
+# Sample demographics and overview
+
+## Figure 1 
+
+```{r}
+
+# Figure 1A
+data_to_plot <- BAMSE_data |>
+  select(daid, subject_id, follow_up, age, sex) |> 
+  distinct() |> 
+  mutate(age = round(age, 1))
+
+p1 <- ggplot(data_to_plot, aes(x = age, y = follow_up, fill = follow_up))+
+  geom_density_ridges(color="grey23", alpha=0.8) +
+  scale_fill_manual(values=c(col_4, col_8, col_16, col_24))+
+  scale_x_continuous(breaks = c(4,8,12, 16,20, 24), minor_breaks = NULL) + 
+  theme_minimal()+
+  labs(x="Age (years)", y = "Density")+
+  theme(legend.position= "none",
+        axis.text.y = element_blank())
+
+
+suppdata$fig1a <- data_to_plot  |> select(follow_up, age) |> arrange(follow_up, age)
+
+# Figure 1B
+data_to_plot_prep <- BAMSE_data |>
+  select(daid, Assay, NPX, follow_up, sex) |> 
+  mutate(sex = case_when(sex == "F" ~ "Female", 
+                         sex == "M" ~ "Male") |> factor()) |> 
+  pivot_wider(names_from = Assay, values_from = NPX) 
+
+for_colors <- data_to_plot_prep |> 
+  select(daid, follow_up, sex)
+
+data_to_plot_scaled <- data_to_plot_prep |> 
+  select(-c(daid, follow_up, sex)) |> 
+  scale(center = T, scale = T) |> 
+  FactoMineR::PCA(graph = F)
+
+
+p2 <- fviz_pca_ind(data_to_plot_scaled,
+             label = "none", 
+             habillage = for_colors$follow_up, 
+             palette = c(col_4, col_8, col_16, col_24),
+             mean.point = FALSE,
+             addEllipses = TRUE )+
+  labs(title =NULL, color = "Follow-up", fill = "Follow-up", shape = "Follow-up")+
+  scale_shape_manual(values = rep(16, 4))+
+  theme_light()+
+  theme(legend.position = "right", 
+        aspect.ratio = 1)
+
+suppdata$fig1b <- data_to_plot_scaled$ind$coord  |> as_tibble() |> select(Dim.1, Dim.2) |> arrange(Dim.1, Dim.2) |> rename(PC1 = Dim.1, PC2 = Dim.2)
+
+# Figure 1C
+
+# Follow-up 4
+data_to_plot_prep4 <- data_to_plot_prep |>
+  filter(follow_up == 4)
+
+for_colors4 <- data_to_plot_prep4 |> 
+  filter(follow_up == 4) |> 
+  select(daid, sex)
+
+data_to_plot_scaled <- data_to_plot_prep4 |> 
+  select(-c(daid, follow_up, sex)) |> 
+  scale(center = T, scale = T)  |>  
+  FactoMineR::PCA(graph = F)
+
+p3 <- fviz_pca_ind(data_to_plot_scaled,
+             label = "none", 
+             habillage = for_colors4$sex, 
+             palette = c(col_F, col_M),
+             mean.point = FALSE,
+             addEllipses = TRUE )+
+  labs(title ="Follow-up 4")+
+  scale_shape_manual(values = rep(16, 2))+
+  theme_light()+
+  theme(legend.position = "none")
+
+suppdata$fig1c  <- data_to_plot_scaled$ind$coord  |> as_tibble() |> select(Dim.1, Dim.2) |> arrange(Dim.1, Dim.2) |> mutate(follow_up = 4) |> rename(PC1 = Dim.1, PC2 = Dim.2)
+
+# Follow-up 8
+data_to_plot_prep8 <- data_to_plot_prep |>
+  filter(follow_up == 8)
+
+for_colors8 <- data_to_plot_prep |> 
+  filter(follow_up == 8) |> 
+  select(daid, sex)
+
+data_to_plot_scaled <- data_to_plot_prep8 |> 
+  select(-c(daid, follow_up, sex)) |> 
+  scale(center = T, scale = T)  |>  
+  FactoMineR::PCA(graph = F)
+
+p4 <- fviz_pca_ind(data_to_plot_scaled,
+             label = "none", 
+             habillage = for_colors8$sex, 
+             palette = c(col_F, col_M),
+             mean.point = FALSE,
+             addEllipses = TRUE )+
+  labs(title ="Follow-up 8")+
+  scale_shape_manual(values = rep(16, 2))+
+  theme_light()+
+  theme(legend.position = "none")
+
+suppdata$fig1c  <- suppdata$fig1c |> 
+  bind_rows(data_to_plot_scaled$ind$coord  |> 
+              as_tibble() |> 
+              select(Dim.1, Dim.2) |> 
+              arrange(Dim.1, Dim.2) |> 
+              rename(PC1 = Dim.1, PC2 = Dim.2) |> 
+              mutate(follow_up = 8)
+            )
+
+# Follow-up 16
+data_to_plot_prep16 <- data_to_plot_prep |>
+  filter(follow_up == 16)
+
+for_colors16 <- data_to_plot_prep |> 
+  filter(follow_up == 16) |> 
+  select(daid, sex)
+
+data_to_plot_scaled <- data_to_plot_prep16 |> 
+  select(-c(daid, follow_up, sex)) |> 
+  scale(center = T, scale = T)  |>  
+  FactoMineR::PCA(graph = F)
+
+p5 <- fviz_pca_ind(data_to_plot_scaled,
+             label = "none", 
+             habillage = for_colors16$sex, 
+             palette = c(col_F, col_M),
+             mean.point = FALSE,
+             addEllipses = TRUE )+
+  scale_shape_manual(values = rep(16, 2))+
+  labs(title ="Follow-up 16")+
+  theme_light()+
+  theme(legend.position = "none")
+
+suppdata$fig1c  <- suppdata$fig1c |> 
+  bind_rows(data_to_plot_scaled$ind$coord  |> 
+              as_tibble() |> 
+              select(Dim.1, Dim.2) |> 
+              arrange(Dim.1, Dim.2) |> 
+              rename(PC1 = Dim.1, PC2 = Dim.2) |> 
+              mutate(follow_up = 16)
+            )
+
+# Follow-up 24
+data_to_plot_prep24 <- data_to_plot_prep |>
+  filter(follow_up == 24)
+
+for_colors24 <- data_to_plot_prep |> 
+  filter(follow_up == 24) |> 
+  select(daid, sex)
+
+data_to_plot_scaled <- data_to_plot_prep24 |> 
+  select(-c(daid, follow_up, sex)) |> 
+  scale(center = T, scale = T)  |>  
+  FactoMineR::PCA(graph = F)
+
+p6 <- fviz_pca_ind(data_to_plot_scaled,
+             label = "none", 
+             habillage = for_colors24$sex, 
+             palette = c(col_F, col_M),
+             mean.point = FALSE,
+             addEllipses = TRUE )+
+  labs(title ="Follow-up 24", color = "Sex", fill = "Sex", shape = "Sex")+
+  scale_shape_manual(values = rep(16, 2))+
+  theme_light()+
+  theme(legend.position = "right")
+
+suppdata$fig1c  <- suppdata$fig1c |> 
+  bind_rows(data_to_plot_scaled$ind$coord  |> 
+              as_tibble() |> 
+              select(Dim.1, Dim.2) |> 
+              arrange(Dim.1, Dim.2) |>
+              rename(PC1 = Dim.1, PC2 = Dim.2) |> 
+              mutate(follow_up = 24)
+            )
+
+# Arrange and save Figure 1
+
+p <- ggarrange(
+  ggarrange(p1, p2,  nrow = 1, ncol = 2, labels = c("a", "b"), widths = c(1.2,1)),
+  ggarrange(p3, p4, p5, p6, nrow = 1, ncol = 4, labels = c("c","", "", ""), widths = c(1,1,1,1.5)), 
+  nrow = 2, heights = c(2,1.5))
+
+ggsave(paste0("output/Figure 1 ", Sys.Date(),".pdf"), height = 6, width = 10)
+
+```
+
+
+# Differences in protein levels between each follow-up
+
+## Figure 2
+```{r}
+
+BAMSE_analysis <- BAMSE_data |>
+  select(daid, Assay, NPX, subject_id, follow_up, sex) |> 
+  distinct() |> 
+  mutate(SampleID = daid)
+
+
+my_theme <-   
+  theme_bw()+
+  theme(legend.position= "bottom", 
+        legend.title = element_blank(), 
+        axis.text = element_text(size = 8),   
+        axis.title = element_text(size = 10),
+        plot.title = element_text(size = 12))
+
+# Figure 2A
+data_to_plot <- BAMSE_analysis |> 
+  filter(follow_up %in% c(4,8)) |> 
+  mutate(follow_up = factor(as.character(follow_up), levels = c(8,4))) |> 
+  select(subject_id, Assay, follow_up, NPX) |> 
+  pivot_wider(names_from = follow_up, values_from = NPX) |> 
+  rename_with(~ paste0("follow_up", .), -c(subject_id, Assay))  |> 
+  group_by(Assay) |> 
+  summarise(p_value = wilcox.test(follow_up4, follow_up8, paired = TRUE, exact = TRUE)$p.value, 
+            estimate = median(follow_up8) - median(follow_up4)) |> 
+  ungroup() |> 
+  mutate(Adjusted_pval = p.adjust(p_value, method = "BH")) |> 
+  arrange(p_value)|> 
+  mutate(my_group = case_when(
+                              Adjusted_pval < p_value_cutoff & estimate < -fc_cutoff ~ "Down",
+                              Adjusted_pval < p_value_cutoff & estimate > fc_cutoff ~ "Up",
+                              TRUE ~ "NS") |> factor(levels = c("NS", "Up", "Down")))
+
+age_signif_proteins = data_to_plot |>  
+  mutate(comparison = "Follow-up 4 vs 8")
+
+set.seed(42)
+p1 <- ggplot(data_to_plot, aes(x= estimate, y= -log10(Adjusted_pval), color = my_group, label=Assay))+
+  geom_point(alpha = 0.7, cex = 0.7, shape = 16)+
+  geom_text_repel(aes( label= case_when((-log10(Adjusted_pval) > 36) ~ as.character(Assay),
+                                        (-log10(Adjusted_pval) > 20)& abs(estimate) > 2.9 ~ as.character(Assay),
+                                        (-log10(Adjusted_pval) > 40)& abs(estimate) > 2.6 ~ as.character(Assay),
+                                        TRUE ~ "")), size = 1.8, max.overlaps = 15, color = "grey20")+
+  scale_color_manual(values=c("NS" = col_protein_ns, "Down" = col_4, "Up" = col_8))+
+  labs(y="-log10(p-value)", x = "Log2 Fold Change", title = "Follow-up 4 vs 8")+
+  xlim(c(-6.5, 6.5))+
+  ylim(c(0,30))+
+  my_theme
+
+suppdata$fig2a  <- data_to_plot |> select(Assay, p_value, Adjusted_pval, estimate) |> 
+  rename(p_value_raw = p_value, p_value_fdr = Adjusted_pval, Fold_change_log2 = estimate)
+
+# Figure 2B
+data_to_plot <- BAMSE_analysis |> 
+  filter(follow_up %in% c(8,16)) |> 
+  mutate(follow_up = factor(as.character(follow_up), levels = c(16,8))) |> 
+  select(subject_id, Assay, follow_up, NPX) |> 
+  pivot_wider(names_from = follow_up, values_from = NPX) |> 
+  rename_with(~ paste0("follow_up", .), -c(subject_id, Assay))  |> 
+  group_by(Assay) |> 
+  summarise(p_value = wilcox.test(follow_up8, follow_up16, paired = TRUE, exact = TRUE)$p.value, 
+            estimate = median(follow_up16) - median(follow_up8)) |> 
+  ungroup() |> 
+  mutate(Adjusted_pval = p.adjust(p_value, method = "BH")) |> 
+  arrange(p_value)|> 
+  mutate(my_group = case_when(
+                              Adjusted_pval < p_value_cutoff & estimate < -fc_cutoff ~ "Down",
+                              Adjusted_pval < p_value_cutoff & estimate > fc_cutoff ~ "Up",
+                              TRUE ~ "NS") |> factor(levels = c("NS", "Up", "Down")))
+
+age_signif_proteins = data_to_plot |>  
+  mutate(comparison = "Follow-up 8 vs 16") |> 
+  bind_rows(age_signif_proteins)
+
+set.seed(42)
+p2 <- ggplot(data_to_plot, aes(x= estimate, y= -log10(Adjusted_pval), color = my_group, label=Assay))+
+  geom_point(alpha = 0.7, cex = 0.7, shape = 16)+
+  geom_text_repel(aes( label= case_when((-log10(Adjusted_pval) > 27) & estimate < -2.7 ~ as.character(Assay),
+                                        (-log10(Adjusted_pval) > 27)& estimate > 2.9 ~ as.character(Assay),
+                                        TRUE ~ "")), size = 1.8, max.overlaps = 15, color = "grey20")+
+  scale_color_manual(values=c("NS" = col_protein_ns, "Down" = col_8, "Up" = col_16))+
+  labs(y="-log10(p-value)", x = "Log2 Fold Change", title = "Follow-up 8 vs 16")+
+  xlim(c(-6.5, 6.5))+
+  ylim(c(0,30))+
+  my_theme
+
+suppdata$fig2b  <- data_to_plot |> select(Assay, p_value, Adjusted_pval, estimate) |> 
+  rename(p_value_raw = p_value, p_value_fdr = Adjusted_pval, Fold_change_log2 = estimate)
+
+# Figure 2C
+data_to_plot <- BAMSE_analysis |> 
+  filter(follow_up %in% c(16,24)) |> 
+  mutate(follow_up = factor(as.character(follow_up), levels = c(24,16))) |> 
+  select(subject_id, Assay, follow_up, NPX) |> 
+  pivot_wider(names_from = follow_up, values_from = NPX) |> 
+  rename_with(~ paste0("follow_up", .), -c(subject_id, Assay))  |> 
+  group_by(Assay) |> 
+  summarise(p_value = wilcox.test(follow_up16, follow_up24, paired = TRUE, exact = TRUE)$p.value, 
+            estimate = median(follow_up24) - median(follow_up16)) |> 
+  ungroup() |> 
+  mutate(Adjusted_pval = p.adjust(p_value, method = "BH")) |> 
+  arrange(p_value)|> 
+  mutate(my_group = case_when(
+                              Adjusted_pval < p_value_cutoff & estimate < -fc_cutoff ~ "Down",
+                              Adjusted_pval < p_value_cutoff & estimate > fc_cutoff ~ "Up",
+                              TRUE ~ "NS") |> factor(levels = c("NS", "Up", "Down")))
+
+
+age_signif_proteins = data_to_plot |>  
+  mutate(comparison = "Follow-up 16 vs 24") |> 
+  bind_rows(age_signif_proteins)
+
+set.seed(42)
+p3 <- ggplot(data_to_plot, aes(x= estimate, y= -log10(Adjusted_pval), color = my_group, label=Assay))+
+  geom_point(alpha = 0.7, cex = 0.7, shape = 16)+
+  geom_text_repel(aes( label= case_when(
+                                        (-log10(Adjusted_pval) > 24)& abs(estimate) > 0.6 ~ as.character(Assay),
+                                        (-log10(Adjusted_pval) > 20)& estimate > 0 ~ as.character(Assay),
+                                        TRUE ~ "")), size = 1.8, max.overlaps = 15, color = "grey20")+
+  scale_color_manual(values=c("NS" = col_protein_ns, "Down" = col_16, "Up" = col_24))+
+  labs(y="-log10(p-value)", x = "Log2 Fold Change", title = "Follow-up 16 vs 24")+
+  xlim(c(-6.5, 6.5))+
+  ylim(c(0,30))+
+  my_theme
+
+suppdata$fig2c  <- data_to_plot |> select(Assay, p_value, Adjusted_pval, estimate) |> 
+  rename(p_value_raw = p_value, p_value_fdr = Adjusted_pval, Fold_change_log2 = estimate)
+
+# Figure 2D
+data_to_plot <- age_signif_proteins |> 
+  mutate(significant_assay = case_when(my_group %in% c("Up", "Down") ~ 1,
+                              my_group == "NS" ~ 0)) |> 
+  select(Assay, comparison, significant_assay) |> 
+  filter(significant_assay == 1)  |>
+  mutate(comparison = case_when(comparison == "Follow-up 4 vs 8" ~ "4 vs 8",
+                                comparison == "Follow-up 8 vs 16" ~ "8 vs 16",
+                                comparison == "Follow-up 16 vs 24" ~ "16 vs 24")) |> 
+  mutate(comparison = factor(comparison, levels = c("4 vs 8", "8 vs 16", "16 vs 24"))) |> 
+  group_by(comparison)  |> 
+  summarise(elements = list(Assay))  |> 
+  deframe()
+
+p4 <- ggvenn(data_to_plot,
+       fill_color = c(col_protein_ns, col_protein_ns, col_protein_ns),
+       stroke_color = c(col_upset),
+       set_name_size = 3,
+       text_size = 2.5 ,
+       stroke_size = 0.5,
+       show_percentage = FALSE )
+
+
+# Figure 2E
+data_to_plot <- age_signif_proteins |> 
+  mutate(my_group = case_when(my_group == "NS" ~ "Not significant",
+                              my_group == "Down" ~ "Significant down", 
+                              my_group == "Up" ~ "Significant up") |> factor(levels = c("Not significant", "Significant up", "Significant down"))) |> 
+  mutate(comparison = factor(comparison, levels = c("Follow-up 16 vs 24" , "Follow-up 8 vs 16", "Follow-up 4 vs 8")))  |> 
+  group_by(my_group, comparison) |> 
+  summarise(n = n())
+
+p5 <- ggplot(data_to_plot, aes(fill=my_group, y=n, x=comparison)) + 
+    geom_bar(position="stack", stat="identity")+
+    geom_text(aes(label = n), size = 3, hjust = 1.3, vjust = 0.5, position = "stack") +
+  scale_fill_manual(values = c(col_protein_ns, col_protein_up, col_protein_down))+
+  labs(y = "Number of proteins", x = "", fill = "")+
+  theme_light()+
+  coord_flip()+
+  theme(legend.background=element_blank(), 
+        legend.position = "bottom",
+        axis.title = element_text(size = 10))
+
+# Figure 2F
+selected_proteins <- c("VWC2L",  "AMBN","CD22","SEZ6","CES2", "DSPP", "COL9A1", 
+                       "ADM", "CCK", "DMP1", "CCN5", "TRIM25", "MMP3", "CELA2A")
+
+data_to_plot <- BAMSE_data |> 
+  select(daid, follow_up, Assay, NPX, Gene_desc) |> 
+  filter(Assay %in% selected_proteins) |> 
+  mutate(Assay = factor(as.character(Assay), levels = selected_proteins))
+
+p6 <- ggplot(data_to_plot, aes(x = follow_up, y = NPX, fill = follow_up))+
+  geom_boxplot(outlier.shape=NA, alpha = 0.5)+
+  geom_quasirandom(aes(color = follow_up), width = 0.2, cex = 0.8, alpha = 0.5, shape = 16)+
+  labs(x="Follow-up", y = "NPX")+
+  scale_fill_manual(values=c(col_4,col_8, col_16, col_24))+
+  scale_color_manual(values=c(col_4,col_8, col_16, col_24))+
+  facet_wrap(~Assay, ncol = 7, scales = "free")+
+  theme_bw()+
+  theme(legend.position= "none", legend.title = element_blank(), axis.text = element_text(size = 8), axis.title = element_text(size = 10))
+
+suppdata$fig2f  <- data_to_plot  |> select(Assay, follow_up,  NPX)  |> arrange(Assay, follow_up, NPX)
+
+# Arrange and save Figure 2
+p <- ggarrange(
+  ggarrange(p1, p2, p3, nrow = 1, ncol = 3, labels = c("a", "b", "c")), 
+  ggarrange(p4, p5,  ncol = 2, labels = c("d", "e"), widths = c(0.8, 2.2)),
+  p6, nrow = 3, heights = c(1.7,1, 2), labels = c("", "","f"))
+
+ggsave(paste0("output/Figure 2 ", Sys.Date(),".pdf"), height = 11, width = 10)
+
+```
+
+## Supplementary figure 2
+
+```{r}
+
+# Females
+BAMSE_F <- BAMSE_data |>
+  filter(sex == "F") |> 
+  select(subject_id, Assay, follow_up, NPX)
+
+##### 4 vs 8
+
+BAMSE_F_4_8 <- BAMSE_F |> 
+  filter(follow_up %in% c(4,8)) |> 
+  pivot_wider(names_from = follow_up, values_from = NPX) |> 
+  rename_with(~ paste0("follow_up", .), -c(subject_id, Assay))  |> 
+  group_by(Assay) |> 
+  summarise(p_value = wilcox.test(follow_up4, follow_up8, paired = TRUE, exact = TRUE)$p.value, 
+            estimate = median(follow_up8) - median(follow_up4)) |> 
+  ungroup() |> 
+  mutate(Adjusted_pval = p.adjust(p_value, method = "BH")) |> 
+  arrange(p_value)|> 
+  mutate(my_group = case_when(
+                              Adjusted_pval < p_value_cutoff & estimate < -fc_cutoff ~ "Down",
+                              Adjusted_pval < p_value_cutoff & estimate > fc_cutoff ~ "Up",
+                              TRUE ~ "NS") |> factor(levels = c("NS", "Up", "Down")))
+
+age_signif_proteins_F = BAMSE_F_4_8 |>  
+  mutate(comparison = "Follow-up 4 vs 8")
+
+
+
+##### 8 vs 16
+
+BAMSE_F_8_16 <- BAMSE_F |> 
+  filter(follow_up %in% c(8,16)) |> 
+  pivot_wider(names_from = follow_up, values_from = NPX) |> 
+  rename_with(~ paste0("follow_up", .), -c(subject_id, Assay))  |> 
+  group_by(Assay) |> 
+  summarise(p_value = wilcox.test(follow_up8, follow_up16, paired = TRUE, exact = TRUE)$p.value, 
+            estimate = median(follow_up16) - median(follow_up8)) |> 
+  ungroup() |> 
+  mutate(Adjusted_pval = p.adjust(p_value, method = "BH")) |> 
+  arrange(p_value)|> 
+  mutate(my_group = case_when(
+                              Adjusted_pval < p_value_cutoff & estimate < -fc_cutoff ~ "Down",
+                              Adjusted_pval < p_value_cutoff & estimate > fc_cutoff ~ "Up",
+                              TRUE ~ "NS") |> factor(levels = c("NS", "Up", "Down")))
+
+
+age_signif_proteins_F = BAMSE_F_8_16 |>  
+  mutate(comparison = "Follow-up 8 vs 16") |> 
+  bind_rows(age_signif_proteins_F)
+
+##### 16 vs 24
+
+BAMSE_F_16_24 <- BAMSE_F |> 
+  filter(follow_up %in% c(16,24)) |> 
+  pivot_wider(names_from = follow_up, values_from = NPX) |> 
+  rename_with(~ paste0("follow_up", .), -c(subject_id, Assay))  |> 
+  group_by(Assay) |> 
+  summarise(p_value = wilcox.test(follow_up16, follow_up24, paired = TRUE, exact = TRUE)$p.value, 
+            estimate = median(follow_up24) - median(follow_up16)) |> 
+  ungroup() |> 
+  mutate(Adjusted_pval = p.adjust(p_value, method = "BH")) |> 
+  arrange(p_value)|> 
+  mutate(my_group = case_when(
+                              Adjusted_pval < p_value_cutoff & estimate < -fc_cutoff ~ "Down",
+                              Adjusted_pval < p_value_cutoff & estimate > fc_cutoff ~ "Up",
+                              TRUE ~ "NS") |> factor(levels = c("NS", "Up", "Down")))
+
+
+age_signif_proteins_F = BAMSE_F_16_24 |>  
+  mutate(comparison = "Follow-up 16 vs 24") |> 
+  bind_rows(age_signif_proteins_F)
+
+# Males
+BAMSE_M <-  BAMSE_data |>
+  filter(sex == "M") |> 
+  select(subject_id, Assay, follow_up, NPX)
+
+##### 4 vs 8
+
+BAMSE_M_4_8 <- BAMSE_M |> 
+  filter(follow_up %in% c(4,8)) |> 
+  pivot_wider(names_from = follow_up, values_from = NPX) |> 
+  rename_with(~ paste0("follow_up", .), -c(subject_id, Assay))  |> 
+  group_by(Assay) |> 
+  summarise(p_value = wilcox.test(follow_up4, follow_up8, paired = TRUE, exact = TRUE)$p.value, 
+            estimate = median(follow_up8) - median(follow_up4)) |> 
+  ungroup() |> 
+  mutate(Adjusted_pval = p.adjust(p_value, method = "BH")) |> 
+  arrange(p_value)|> 
+  mutate(my_group = case_when(
+                              Adjusted_pval < p_value_cutoff & estimate < -fc_cutoff ~ "Down",
+                              Adjusted_pval < p_value_cutoff & estimate > fc_cutoff ~ "Up",
+                              TRUE ~ "NS") |> factor(levels = c("NS", "Up", "Down")))
+
+###
+
+age_signif_proteins_M = BAMSE_M_4_8 |>  
+  mutate(comparison = "Follow-up 4 vs 8")
+
+##### 8 vs 16
+
+BAMSE_M_8_16 <- BAMSE_M |> 
+  filter(follow_up %in% c(8,16)) |>  
+  pivot_wider(names_from = follow_up, values_from = NPX) |> 
+  rename_with(~ paste0("follow_up", .), -c(subject_id, Assay))  |> 
+  group_by(Assay) |> 
+  summarise(p_value = wilcox.test(follow_up8, follow_up16, paired = TRUE, exact = TRUE)$p.value, 
+            estimate = median(follow_up16) - median(follow_up8)) |> 
+  ungroup() |> 
+  mutate(Adjusted_pval = p.adjust(p_value, method = "BH")) |> 
+  arrange(p_value)|> 
+  mutate(my_group = case_when(
+                              Adjusted_pval < p_value_cutoff & estimate < -fc_cutoff ~ "Down",
+                              Adjusted_pval < p_value_cutoff & estimate > fc_cutoff ~ "Up",
+                              TRUE ~ "NS") |> factor(levels = c("NS", "Up", "Down")))
+
+
+age_signif_proteins_M = BAMSE_M_8_16 |>  
+  mutate(comparison = "Follow-up 8 vs 16") |> 
+  bind_rows(age_signif_proteins_M)
+
+
+##### 16 vs 24
+
+BAMSE_M_16_24 <- BAMSE_M |> 
+  filter(follow_up %in% c(16,24)) |> 
+  pivot_wider(names_from = follow_up, values_from = NPX) |> 
+  rename_with(~ paste0("follow_up", .), -c(subject_id, Assay))  |> 
+  group_by(Assay) |> 
+  summarise(p_value = wilcox.test(follow_up16, follow_up24, paired = TRUE, exact = TRUE)$p.value, 
+            estimate = median(follow_up24) - median(follow_up16)) |> 
+  ungroup() |> 
+  mutate(Adjusted_pval = p.adjust(p_value, method = "BH")) |> 
+  arrange(p_value)|> 
+  mutate(my_group = case_when(
+                              Adjusted_pval < p_value_cutoff & estimate < -fc_cutoff ~ "Down",
+                              Adjusted_pval < p_value_cutoff & estimate > fc_cutoff ~ "Up",
+                              TRUE ~ "NS") |> factor(levels = c("NS", "Up", "Down")))
+
+
+age_signif_proteins_M = BAMSE_M_16_24 |>  
+  mutate(comparison = "Follow-up 16 vs 24") |> 
+  bind_rows(age_signif_proteins_M)
+
+# Combine females and males results and make plot
+data_to_plot <-  age_signif_proteins_M |> 
+  rename(p_value_M = Adjusted_pval, group_M = my_group, estimate_M = estimate) |> 
+  select(Assay, comparison, p_value_M, estimate_M, group_M) |> 
+  left_join(age_signif_proteins_F |> 
+              rename(p_value_F = Adjusted_pval, group_F = my_group, estimate_F = estimate) |> 
+              select(Assay, p_value_F, comparison, group_F, estimate_F), 
+            by = c("Assay", "comparison") ) |> 
+  mutate(comparison = factor(comparison, levels = c("Follow-up 4 vs 8", "Follow-up 8 vs 16", "Follow-up 16 vs 24"))) |> 
+  mutate(my_group = paste0("Males: ", group_M, ", Females: ", group_F)) |> 
+  filter(!(my_group == "Males: NS, Females: NS"))
+
+set.seed(193)
+p <- ggplot(data_to_plot, aes(x= estimate_M, y= estimate_F, color = my_group, label=Assay))+
+  geom_point(alpha = 0.7, cex = 0.7, shape = 16)+
+  geom_text_repel(aes( label= case_when(
+    (estimate_M < -4) &  (estimate_F < 1) ~ as.character(Assay),
+    (estimate_M > 5) ~ as.character(Assay),
+    (estimate_F > 2.1) &  (estimate_M < 1) ~ as.character(Assay),
+    (estimate_F < 0.5) &  (estimate_M > 3) ~ as.character(Assay),
+  TRUE ~ "")), size = 1.8, max.overlaps = 15, color = "grey20")+
+  labs(y="Fold change females", x = "Fold change males", title = "")+
+  facet_wrap(~comparison)+
+  theme_bw()+
+  theme(legend.position= "bottom", 
+        legend.title = element_blank(), 
+        axis.text = element_text(size = 8),   
+        axis.title = element_text(size = 10),
+        plot.title = element_text(size = 12),
+        aspect.ratio = 1)
+
+ggsave(paste0("output/Supplementary figure 2 ", Sys.Date(),".pdf"), height = 4, width = 8)
+```
+
+\newpage
+# Trajectory analysis to identify different protein clusters
+
+```{r}
+## Construct input for clusters
+
+selected_proteins <- age_signif_proteins |> 
+  filter(Adjusted_pval < p_value_cutoff & abs(estimate) > fc_cutoff) |> 
+  distinct(Assay) |> 
+  pull(Assay) 
+
+# Prepare the data
+tradjectory_data <- BAMSE_data  |> 
+  select(Assay, daid, follow_up, NPX) |> 
+  filter(Assay %in% selected_proteins) |> 
+  group_by(Assay) |> 
+  mutate(scaled_NPX = scale(NPX, center = TRUE, scale = TRUE)) |> 
+  ungroup() |> 
+  group_by(follow_up, Assay)  |> 
+  summarize(median_NPX = median(scaled_NPX, na.rm = TRUE), .groups = "drop") |> 
+  pivot_wider(names_from = follow_up, values_from = median_NPX)  |> 
+  rename_with(~ paste0("follow_up", .), -Assay)  |> 
+  column_to_rownames(var = "Assay") |> 
+  as.data.frame()
+
+
+set.seed(2008)
+dist_matrix <- tradjectory_data |> 
+  as.matrix() |> 
+  dist(method = "euclidean")
+
+```
+
+
+## Supplementary figure 1
+```{r}
+my_theme <-   
+  theme_bw()+
+  theme(axis.text = element_text(size = 8),   
+        axis.title = element_text(size = 10),
+        plot.title = element_text(size = 12))
+
+p1 <- fviz_nbclust(tradjectory_data |>
+as.matrix(), FUN = hcut, method = "silhouette")+
+    labs(
+    title = "",
+    x = "Number of clusters (k)")+
+  my_theme
+
+
+p2 <- fviz_nbclust(tradjectory_data |>
+   as.matrix(), FUN = hcut, method = "gap_stat")+
+    labs(
+    title = "",
+    x = "Number of clusters (k)")+
+  my_theme
+
+set.seed(2008)
+
+# Indices to plot
+plot_indices <- c("cindex")
+
+# Run NbClust
+nb_list <- lapply(plot_indices, function(idx) {
+  NbClust(
+    tradjectory_data, diss = NULL,
+    distance = "euclidean",
+    min.nc = 2,
+    max.nc = 10,
+    method = "ward.D2",
+    index = idx, alphaBeale = 0.1
+  )
+})
+names(nb_list) <- plot_indices
+
+# Extract index values
+index_df <- bind_rows(lapply(names(nb_list), function(idx) {
+  data.frame(
+    k = as.numeric(names(nb_list[[idx]]$All.index)),
+    value = as.numeric(nb_list[[idx]]$All.index),
+    index = idx
+  )
+}))|>  mutate(index = as.character(index))
+
+p3 <- ggplot(index_df, aes(x = k, y = value)) +
+  geom_line(linewidth = 0.5, color = "#4682b4") +
+  geom_point(size = 1.8, color = "#4682b4") +
+  geom_vline(
+    aes(xintercept = 8),
+    linetype = "dashed",
+    color = "steelblue",
+    linewidth = 0.5
+  )  +
+  scale_x_continuous(breaks = 2:10) +
+  theme_classic()+
+  labs(
+    title = "",
+    x = "Number of clusters (k)",
+    y = "C-index") + # (lower is better)
+  my_theme
+
+
+# Combine the plots
+p <- ggarrange(p1, p2, p3, nrow = 1, ncol = 3, labels = c("a", "b", "c"), widths = c(1,1,1))
+
+ggsave(paste0("output/Supplementary figure 1 ", Sys.Date(),".pdf"), height = 5, width = 10)
+
+```
+
+
+```{r}
+# Evaluate cluster stability 
+
+#Define cluster function wrapper
+wardD2_fun <- function(d, k) {
+  hclustCBI(as.matrix(d), 
+            method = "ward.D2", 
+            cut = "number", 
+            k = k)
+}
+
+# Setup parallel 
+nc <- max(1, parallel::detectCores() - 2)  
+cl <- makeCluster(nc)
+registerDoParallel(cl)
+
+# Set bootstrap parameters
+B_total <- 100                    
+B_per_worker <- ceiling(B_total / nc)  
+
+# Run clusterboot in parallel
+set.seed(2008)
+results <- foreach(i = 1:nc, .packages = "fpc") %dopar% {
+  clusterboot(
+    dist_matrix,
+    B = B_per_worker,
+    distances = TRUE,        
+    bootmethod = "boot",
+    clustermethod = wardD2_fun,
+    k = 8                   
+  )
+}
+
+stopCluster(cl)
+
+# Aggregate results
+bootmean_mat <- do.call(rbind, lapply(results, `[[`, "bootmean"))
+bootbrd_mat  <- do.call(rbind, lapply(results, `[[`, "bootbrd"))
+
+bootmean_avg <- colMeans(bootmean_mat, na.rm = TRUE)  # average Jaccard per cluster
+bootbrd_sum  <- colSums(bootbrd_mat, na.rm = TRUE)    # sum of cluster dissolutions
+
+# Use partition from first run as representative
+final_partition <- results[[1]]$result$partition
+clusters_from_stability <- tibble(Assay = names(final_partition), Cluster = final_partition)
+
+# Add cluster labels to the data
+tradjectory_data$Assay <-rownames(tradjectory_data)
+tradjectory_data <- tradjectory_data |> 
+  left_join(clusters_from_stability, by = "Assay")
+
+saved_protein_cluster <- tradjectory_data |> 
+  distinct(Assay, Cluster) |> 
+  as_tibble()
+
+```
+
+## Figure 3
+```{r}
+# Figure 3A
+cluster_sizes <- saved_protein_cluster  |> 
+  group_by(Cluster)  |> 
+  summarise(Size = n()) |> 
+  mutate(Cluster_Label = paste0("Cluster ", Cluster, "\n", Size, " proteins")) |> 
+  select(Cluster, Cluster_Label)
+
+data_to_plot <- tradjectory_data  |> 
+  pivot_longer(cols = starts_with("follow_up"), 
+               names_to = "follow_up", 
+               values_to = "NPX")  |> 
+  mutate(follow_up = case_when(follow_up == "follow_up4" ~ "4",
+                               follow_up == "follow_up8" ~ "8",
+                               follow_up == "follow_up16" ~ "16",
+                               follow_up == "follow_up24" ~ "24")) |> 
+  mutate(follow_up = factor(follow_up, levels = c("4", "8", "16", "24"))) |> 
+  left_join(cluster_sizes, by = "Cluster") |> 
+  mutate(Cluster = paste0("Cluster ", Cluster))
+
+p1 <- 
+  ggplot(data_to_plot, aes(x = follow_up, y = NPX, group = Assay)) + 
+  geom_line(color = col_protein, alpha = 0.2) +  
+  geom_smooth(aes(group = 1), method = "loess", span = 0.7,
+              se = FALSE, color = "grey30", linewidth = 1, linetype = "solid") +
+  facet_wrap(~ Cluster_Label, ncol = 8) +  
+  ylim(-1.7,1.7)+
+  labs(
+       x = "Follow-up",
+       y = "Scaled NPX") + 
+  theme_bw() +
+  theme(legend.position = "bottom") 
+
+
+suppdata$fig3a  <- data_to_plot |> select(Cluster, Assay, follow_up, NPX) |> 
+  pivot_wider(names_from = follow_up, values_from = NPX, names_prefix = "follow_up_") |> 
+  arrange(Cluster, Assay)
+
+# Figure 3B
+data_to_plot <- age_signif_proteins |> 
+  mutate(my_group = case_when(Adjusted_pval > p_value_cutoff ~ "Not significant",
+                              Adjusted_pval < p_value_cutoff & estimate < -fc_cutoff ~ "Significant down", 
+                              Adjusted_pval < p_value_cutoff & estimate > fc_cutoff ~ "Significant up", TRUE ~"Not significant") |> factor(levels = c("Not significant", "Significant up", "Significant down"))) |> 
+  mutate(comparison = case_when(comparison == "Follow-up 16 vs 24" ~ "16 vs 24",
+                                comparison == "Follow-up 8 vs 16" ~ "8 vs 16",
+                                comparison == "Follow-up 4 vs 8" ~ "4 vs 8")) |>
+    mutate(comparison = factor(comparison, levels = c("4 vs 8", "8 vs 16", "16 vs 24"))) |> 
+  left_join(saved_protein_cluster, by = "Assay")|> 
+  mutate(Cluster = paste0("Cluster ", Cluster)) |> 
+  filter(Cluster != "Cluster NA") |> 
+  group_by(my_group, comparison, Cluster) |> 
+  summarise(n = n()) |> 
+  mutate(text_for_plot = case_when(n < 45 ~ NA,  TRUE ~ n))
+
+
+p2 <- ggplot(data_to_plot, aes(fill=my_group, y=n, x=comparison)) + 
+    geom_bar(position="stack", stat="identity")+
+    geom_text(aes(label = text_for_plot), size = 2.5, hjust = 0.5, vjust = 1.3, position = "stack") +
+  scale_fill_manual(values = c(col_protein_ns, col_protein_up, col_protein_down))+
+  labs(y = "Number of proteins", x = "", fill = "")+
+  theme_bw()+
+  ggh4x::facet_wrap2(~ Cluster, , ncol = 8, scales = "fixed", axes = "all")+
+  theme(legend.background=element_blank(), legend.position = "bottom", axis.text.x = element_text(size = 9, angle = 45, hjust = 1))
+
+
+# Figure 3C
+selected_proteins <- c("CEP250","UBR2", "APOA2", "SEPTIN7", "SPINT3", "VRK1", "KLK14", "IGFBP1")
+
+data_to_plot <- BAMSE_data |> 
+  select(daid, subject_id, follow_up, Assay, NPX) |> 
+  left_join(saved_protein_cluster, by = "Assay") |> 
+  filter(Assay %in% selected_proteins) |> 
+  mutate(Assay = factor(Assay, levels = selected_proteins)) |> 
+  mutate(Cluster_assay = paste0("Cluster ", Cluster, "\n", Assay))
+
+p3 <- 
+  ggplot(data_to_plot, aes(x = follow_up, y = NPX, group = subject_id))+
+  geom_line(color = col_protein, alpha = 0.4) +  
+  geom_smooth(aes(group = 1), method = "loess", span = 0.7, 
+              se = FALSE, color = "grey30", linewidth = 1, linetype = "solid") +
+  labs(x="Follow up", y = "NPX")+
+  facet_wrap(~ Cluster_assay, scales = "free_y", ncol = 8) +
+  theme_bw()
+
+
+suppdata$fig3c  <- data_to_plot |> select(Assay, Cluster, subject_id, follow_up, follow_up, NPX) |> pivot_wider(names_from = follow_up, values_from = NPX, names_prefix = "Follow_up_") |>
+  relocate(Assay, Cluster, subject_id, Follow_up_4, Follow_up_8, Follow_up_16, Follow_up_24) |>
+  select(-subject_id) |> 
+  arrange(Cluster, Follow_up_4, Follow_up_8, Follow_up_16, Follow_up_24) 
+  
+
+# Arrange and save Figure 3
+
+p <-  ggarrange(p1, p2, p3, nrow = 3, ncol = 1, labels = c("a", "b", "c"), heights = c(1,1.2,1))
+
+ggsave(paste0("output/Figure 3 ", Sys.Date(),".pdf"), height = 10, width = 10)
+
+```
+\newpage
+
+## Table 2 
+```{r}
+
+safe_enrichGO <- possibly(enrichGO, otherwise = NULL)
+
+universe_proteins <- saved_protein_cluster |> 
+  left_join(BAMSE_data |> select(Assay, UniProt) |> distinct(), by = "Assay") |> 
+  pull(UniProt) |> 
+  unique()
+
+enrichment_result_tradjectories <- saved_protein_cluster |> 
+  left_join(BAMSE_data |> select(Assay, UniProt) |> distinct(), by = "Assay") |> 
+  group_by(Cluster) |> 
+  summarise(
+    ego = list(
+      safe_enrichGO(
+        gene = UniProt,
+        universe = universe_proteins,
+        OrgDb = org.Hs.eg.db,
+        keyType = "UNIPROT",  
+        ont = "BP",
+        pAdjustMethod = "BH",
+        pvalueCutoff = 0.05,
+        qvalueCutoff = 0.2,
+        readable = TRUE
+      )
+    ),
+    .groups = "drop"
+  )
+
+
+###
+enrichment_result_tradjectories_table <- enrichment_result_tradjectories  |> 
+  mutate(ego_df = map(ego, ~ as_tibble(.x@result))) |> 
+  select(Cluster, ego_df)  |> 
+  unnest(ego_df) |> 
+  filter(p.adjust < 0.05) |> 
+  arrange(Cluster, pvalue) |> 
+  select(Cluster, ID, Description, p.adjust, pvalue, Count, geneID) |> 
+  mutate(p.adjust = format(p.adjust, scientific = TRUE, digits = 2, nsmall = 2)) |> 
+  mutate(pvalue = format(pvalue, scientific = TRUE, digits = 2, nsmall = 2)) 
+
+
+supptable2  <- enrichment_result_tradjectories_table |>
+  rename("p-value raw" = pvalue, "p-value FDR" = p.adjust)
+
+enrichment_result_tradjectories_table |> 
+  group_by(Cluster)  |>
+  slice_min(order_by = pvalue, n = 6)  |>
+  ungroup() |>
+  arrange(Cluster, pvalue) |> 
+  select(-c(geneID)) |> 
+  rename("p-value raw" = pvalue, "p-value FDR" = p.adjust, "Number of proteins"  = Count) |> 
+  write.csv(paste0("output/Table 2 ", Sys.Date(), ".csv"))
+
+```
+
+\newpage
+# Sex-associated protein profiles
+## Figure 4
+```{r}
+
+BAMSE_analysis <- BAMSE_data |>
+  select(daid, Assay, NPX, subject_id, follow_up, sex) |>
+  distinct() |> 
+  mutate(SampleID = daid) |> 
+    mutate(sex = case_when(sex == "F" ~ "Female", 
+                         sex == "M" ~ "Male") |> factor())
+
+my_theme <-   theme_bw()+
+  theme(legend.position= "none", 
+        legend.title = element_blank(), 
+        axis.text = element_text(size = 8),   
+        axis.title = element_text(size = 10),
+        plot.title = element_text(size = 12))
+
+# Figure 4A
+estimate4 <- BAMSE_analysis |> 
+  filter(follow_up == 4) |> 
+  select(subject_id, Assay, NPX, sex) |> 
+  group_by(Assay, sex) |> 
+  summarise(median = median(NPX)) |> 
+  ungroup() |> 
+  pivot_wider(names_from = sex, values_from = median) |> 
+  mutate(estimate = Female - Male) |> 
+  select(Assay, estimate)
+
+data_to_plot4 <- BAMSE_analysis |> 
+  filter(follow_up == 4) |> 
+  select(subject_id, Assay, NPX, sex) |> 
+  group_by(Assay) |> 
+  summarise(p_value = wilcox.test(NPX ~ sex, exact = TRUE)$p.value) |> 
+  ungroup() |> 
+  left_join(estimate4, by = "Assay") |> 
+  mutate(Adjusted_pval = p.adjust(p_value, method = "BH")) |> 
+  arrange(p_value)|> 
+  mutate(my_group = case_when(
+                              Adjusted_pval < p_value_cutoff & estimate < -fc_cutoff ~ "Down",
+                              Adjusted_pval < p_value_cutoff & estimate > fc_cutoff ~ "Up",
+                              TRUE ~ "NS") |> factor(levels = c("NS", "Up", "Down")))
+
+rm(estimate4)
+
+set.seed(42) 
+p1 <- ggplot(data_to_plot4, aes(x= estimate, y= -log10(Adjusted_pval), color = my_group, label=Assay))+
+  geom_point(alpha = 0.7, cex = 0.7)+
+  geom_text_repel(aes( label= case_when((-log10(p_value) > 17) ~ as.character(Assay),(-log10(Adjusted_pval) > 3) ~ as.character(Assay),
+                                        (estimate > 2.3) ~ as.character(Assay)
+                                        ,  TRUE ~ "")), size = 2, max.overlaps = 10, color = "grey20")+
+    scale_color_manual(values=c("NS" = col_protein_ns, "Down" = col_M, "Up" = col_F))+
+  labs(y="-log10(p-value)", x = "Log2 Fold Change", title = "Follow-up 4")+
+  xlim(c(-7.8, 7.8))+
+  ylim(c(0,30))+
+  my_theme
+
+suppdata$fig4a  <- data_to_plot4 |> select(Assay, p_value, Adjusted_pval, estimate) |> 
+  rename(p_value_raw = p_value, p_value_fdr = Adjusted_pval, Fold_change_log2 = estimate)
+
+
+# Figure 4B
+estimate8 <- BAMSE_analysis |> 
+  filter(follow_up == 8) |> 
+  select(subject_id, Assay, NPX, sex) |> 
+  group_by(Assay, sex) |> 
+  summarise(median = median(NPX)) |> 
+  ungroup() |> 
+  pivot_wider(names_from = sex, values_from = median) |> 
+  mutate(estimate = Female - Male) |> 
+  select(Assay, estimate)
+
+data_to_plot8 <- BAMSE_analysis |> 
+  filter(follow_up == 8) |> 
+  select(subject_id, Assay, NPX, sex) |> 
+  group_by(Assay) |> 
+  summarise(p_value = wilcox.test(NPX ~ sex, exact = TRUE)$p.value) |> 
+  ungroup() |> 
+  left_join(estimate8, by = "Assay") |> 
+  mutate(Adjusted_pval = p.adjust(p_value, method = "BH")) |> 
+  arrange(p_value)|> 
+  mutate(my_group = case_when(
+                              Adjusted_pval < p_value_cutoff & estimate < -fc_cutoff ~ "Down",
+                              Adjusted_pval < p_value_cutoff & estimate > fc_cutoff ~ "Up",
+                              TRUE ~ "NS") |> factor(levels = c("NS", "Up", "Down")))
+
+rm(estimate8)
+
+set.seed(42)
+p2 <- ggplot(data_to_plot8, aes(x= estimate, y= -log10(Adjusted_pval), color = my_group, label=Assay))+
+  geom_point(alpha = 0.7, cex = 0.7)+
+  geom_text_repel(aes( label= case_when((-log10(p_value) > 17) ~ as.character(Assay), (-log10(Adjusted_pval) > 3) ~ as.character(Assay),
+                                        (estimate > 2.3) ~ as.character(Assay)
+                                        ,  TRUE ~ "")), size = 2, max.overlaps = 10, color = "grey20")+
+    scale_color_manual(values=c("NS" = col_protein_ns, "Down" = col_M, "Up" = col_F))+
+  labs(y="-log10(p-value)", x = "Log2 Fold Change", title = "Follow-up 8")+
+  xlim(c(-7.8, 7.8))+
+  ylim(c(0,30))+
+  my_theme
+
+suppdata$fig4b  <- data_to_plot8 |> select(Assay, p_value, Adjusted_pval, estimate) |> 
+  rename(p_value_raw = p_value, p_value_fdr = Adjusted_pval, Fold_change_log2 = estimate)
+
+# Figure 4C
+estimate16 <- BAMSE_analysis |> 
+  filter(follow_up == 16) |> 
+  select(subject_id, Assay, NPX, sex) |> 
+  group_by(Assay, sex) |> 
+  summarise(median = median(NPX)) |> 
+  ungroup() |> 
+  pivot_wider(names_from = sex, values_from = median) |> 
+  mutate(estimate = Female - Male) |> 
+  select(Assay, estimate)
+
+data_to_plot16 <- BAMSE_analysis |> 
+  filter(follow_up == 16) |> 
+  select(subject_id, Assay, NPX, sex) |> 
+  group_by(Assay) |> 
+  summarise(p_value = wilcox.test(NPX ~ sex, exact = TRUE)$p.value) |> 
+  ungroup() |> 
+  left_join(estimate16, by = "Assay") |> 
+  mutate(Adjusted_pval = p.adjust(p_value, method = "BH")) |> 
+  arrange(p_value)|> 
+  mutate(my_group = case_when(
+                              Adjusted_pval < p_value_cutoff & estimate < -fc_cutoff ~ "Down",
+                              Adjusted_pval < p_value_cutoff & estimate > fc_cutoff ~ "Up",
+                              TRUE ~ "NS") |> factor(levels = c("NS", "Up", "Down")))
+
+rm(estimate16)
+
+set.seed(42)
+p3 <- ggplot(data_to_plot16, aes(x= estimate, y= -log10(Adjusted_pval), color = my_group, label=Assay))+
+  geom_point(alpha = 0.7, cex = 0.7)+
+  geom_text_repel(aes( label= case_when((-log10(Adjusted_pval) > 17) ~ as.character(Assay),
+                                        (-log10(Adjusted_pval) > 5) & (estimate > 2.3) ~ as.character(Assay)
+                                        ,  TRUE ~ "")), size = 2, max.overlaps = 10, color = "grey20")+
+    scale_color_manual(values=c("NS" = col_protein_ns, "Down" = col_M, "Up" = col_F))+
+  labs(y="-log10(p-value)", x = "Log2 Fold Change", title = "Follow-up 16")+
+  xlim(c(-7.8, 7.8))+
+  ylim(c(0,30))+
+  my_theme
+
+
+suppdata$fig4c  <- data_to_plot16 |> select(Assay, p_value, Adjusted_pval, estimate) |> 
+  rename(p_value_raw = p_value, p_value_fdr = Adjusted_pval, Fold_change_log2 = estimate)
+
+# Figure 4D
+estimate24 <- BAMSE_analysis |> 
+  filter(follow_up == 24) |> 
+  select(subject_id, Assay, NPX, sex) |> 
+  group_by(Assay, sex) |> 
+  summarise(median = median(NPX)) |> 
+  ungroup() |> 
+  pivot_wider(names_from = sex, values_from = median) |> 
+  mutate(estimate = Female - Male) |> 
+  select(Assay, estimate)
+
+data_to_plot24 <- BAMSE_analysis |> 
+  filter(follow_up == 24) |> 
+  select(subject_id, Assay, NPX, sex) |> 
+  group_by(Assay) |> 
+  summarise(p_value = wilcox.test(NPX ~ sex, exact = TRUE)$p.value) |> 
+  ungroup() |> 
+  left_join(estimate24, by = "Assay") |> 
+  mutate(Adjusted_pval = p.adjust(p_value, method = "BH")) |> 
+  arrange(p_value)|> 
+  mutate(my_group = case_when(
+                              Adjusted_pval < p_value_cutoff & estimate < -fc_cutoff ~ "Down",
+                              Adjusted_pval < p_value_cutoff & estimate > fc_cutoff ~ "Up",
+                              TRUE ~ "NS") |> factor(levels = c("NS", "Up", "Down")))
+
+rm(estimate24)
+
+set.seed(42)
+p4 <- ggplot(data_to_plot24, aes(x= estimate, y= -log10(Adjusted_pval), color = my_group, label=Assay))+
+  geom_point(alpha = 0.7, cex = 0.7)+
+  geom_text_repel(aes( label= case_when((-log10(p_value) > 17) ~ as.character(Assay),
+                                        (estimate > 2.5) ~ as.character(Assay)
+                                        ,  TRUE ~ "")), size = 2, max.overlaps = 10, color = "grey20")+
+    scale_color_manual(values=c("NS" = col_protein_ns, "Down" = col_M, "Up" = col_F))+
+  labs(y="-log10(p-value)", x = "Log2 Fold Change", title = "Follow-up 24")+
+  xlim(c(-7.8, 7.8))+
+  ylim(c(0,30))+
+  my_theme
+
+
+suppdata$fig4d  <- data_to_plot24 |> select(Assay, p_value, Adjusted_pval, estimate) |> 
+  rename(p_value_raw = p_value, p_value_fdr = Adjusted_pval, Fold_change_log2 = estimate)
+
+# Save p-values
+save_p_values_sex <- data_to_plot4 |> 
+  select(Assay, estimate, Adjusted_pval, my_group) |> 
+  mutate(comparison = "Follow up 4") |>
+  bind_rows(data_to_plot8 |> 
+              select(Assay, estimate, Adjusted_pval, my_group) |> 
+              mutate(comparison = "Follow up 8")) |> 
+  bind_rows(data_to_plot16 |> 
+              select(Assay, estimate, Adjusted_pval, my_group) |> 
+              mutate(comparison = "Follow up 16")) |> 
+  bind_rows(data_to_plot24 |> 
+              select(Assay, estimate, Adjusted_pval, my_group) |> 
+              mutate(comparison = "Follow up 24"))
+
+save_p_values_sex_including_raw_p <- data_to_plot4 |> 
+  select(Assay, estimate, p_value, Adjusted_pval, my_group) |> 
+  mutate(comparison = "Follow up 4") |>
+  bind_rows(data_to_plot8 |> 
+              select(Assay, estimate, p_value, Adjusted_pval, my_group) |> 
+              mutate(comparison = "Follow up 8")) |> 
+  bind_rows(data_to_plot16 |> 
+              select(Assay, estimate, p_value, Adjusted_pval, my_group) |> 
+              mutate(comparison = "Follow up 16")) |> 
+  bind_rows(data_to_plot24 |> 
+              select(Assay, estimate, p_value, Adjusted_pval, my_group) |> 
+              mutate(comparison = "Follow up 24"))
+
+
+# Figure 4E
+data_to_plot <- data_to_plot4 |> 
+  mutate(`4` = case_when(my_group %in% c("Up", "Down") ~1, TRUE~0)) |> 
+  select(Assay, `4`) |> 
+  left_join(data_to_plot8 |> 
+              mutate(`8` = case_when(my_group %in% c("Up", "Down")~1, TRUE~0)) |> 
+              select(Assay, `8`), by = "Assay") |> 
+  left_join(data_to_plot16 |> 
+              mutate(`16` = case_when(my_group %in% c("Up", "Down")~1, TRUE~0)) |> 
+              select(Assay, `16`), by = "Assay") |> 
+  left_join(data_to_plot24 |> 
+              mutate(`24` = case_when(my_group %in% c("Up", "Down")~1, TRUE~0)) |> 
+              select(Assay, `24`), by = "Assay") 
+
+sex_binary_results  <- data_to_plot |> 
+  rename(follow_up_4 = `4`, follow_up_8 = `8`, follow_up_16 = `16`, follow_up_24 = `24`)
+  
+p6 <- upset(data_to_plot |> 
+        select(-Assay) |> 
+        as.data.frame(), 
+      order.by = "freq", 
+      keep.order = TRUE, 
+      sets = c("24", "16", "8", "4"),
+      mb.ratio = c(0.6, 0.4),
+      point.size = 2.8,
+      main.bar.color = col_upset,
+      matrix.color = col_upset,
+      sets.bar.color = col_upset 
+      )
+
+# Save the UpSetR plot to a temporary PNG file
+tmp_file <- tempfile(fileext = ".png")
+png(tmp_file, width = 800, height = 600, res = 200)
+dev.off()
+
+# Read the PNG file and convert it into a grid object
+p6_grob <- rasterGrob(readPNG(tmp_file), interpolate = TRUE)
+
+# Figure 4F
+selected_proteins <- data_to_plot |> 
+  filter(`16` == 1 & `24` == 1) |> 
+  pull(Assay)
+
+data_to_plot_prep <- BAMSE_data |>
+  select(daid, Assay, NPX, follow_up, sex) |> 
+  filter(follow_up %in% c(24)) |> 
+  filter(Assay %in% selected_proteins) |> 
+  pivot_wider(names_from = Assay, values_from = NPX) 
+
+for_colors <- data_to_plot_prep |> 
+  select(daid, sex)
+
+data_to_plot_scaled <- data_to_plot_prep |> 
+  select(-c(daid, follow_up, sex)) |> 
+  scale(center = T, scale = T)  |>  
+  FactoMineR::PCA(graph = F)
+
+p7 <- fviz_pca_ind(data_to_plot_scaled,
+             label = "none", 
+             habillage = for_colors$sex, 
+             palette = c(col_F, col_M),
+             addEllipses = TRUE )+
+  labs(title ="")+
+  scale_shape_manual(values = rep(16, 2))+
+  theme_light()+
+  theme(legend.position = "none", 
+        legend.key.size = unit(0.3, "cm"))
+
+suppdata$fig4f <- data_to_plot_scaled$ind$coord  |> as_tibble() |> select(Dim.1, Dim.2) |> arrange(Dim.1, Dim.2) |> rename(PC1 = Dim.1, PC2 = Dim.2)
+
+
+# Figure 4G
+selected_proteins = c("ZP4","XG","PAEP", "LEP","OVGP1" ,"GH1", "SHBG",  "AMELY", "SPESP1", "TXLNGY", "SSC4D", "ACAN","INSL3", "SPINT3")
+
+data_to_plot <- BAMSE_data |>
+  filter(Assay %in% selected_proteins) |>
+  mutate(Assay = factor(as.character(Assay), levels = selected_proteins)) |> 
+  select(daid, Assay, NPX, subject_id, follow_up, sex, Gene_desc) |>  
+  distinct()
+
+p5 <- 
+  ggplot(data_to_plot, aes(x = follow_up, y = NPX, fill = sex))+
+  geom_boxplot(outlier.shape=NA, alpha = 0.5)+
+  geom_quasirandom(aes(color = sex, group = sex), width = 0.1, alpha = 0.7, cex = 0.8, dodge.width = 0.75, shape = 16 )+
+  labs(x="", y = "NPX")+
+  scale_fill_manual(values=c(col_F,col_M))+
+  scale_color_manual(values=c(col_F,col_M))+
+  facet_wrap(~Assay, ncol = 7, scales = "free")+
+  labs(x = "Follow-up")+
+  theme_bw()+
+  theme(legend.position = "bottom",
+        legend.title = element_blank(), 
+        axis.text = element_text(size = 8))
+
+suppdata$fig4g  <- data_to_plot  |> select(Assay, follow_up,  NPX)  |> arrange(Assay, follow_up, NPX)
+
+# Arrange and save Figure 4
+
+p <- ggarrange(
+  ggarrange(p1, p2, p3, p4, nrow = 1, ncol = 4, labels = c("a", "b", "c", "d")),
+  ggarrange(p6_grob, p7, ncol = 2, widths = c(1,1), labels = c("e", "f")), 
+  ggarrange(p5, nrow = 1, labels = c("g")), 
+  nrow = 3, heights = c(1, 1.2, 2))
+
+ggsave(paste0("output/Figure 4 ", Sys.Date(),".pdf"), height = 11, width = 10)
+
+```
+
+## Table 3
+```{r}
+
+safe_enrichGO <- possibly(enrichGO, otherwise = NULL)
+
+universe_proteins <- BAMSE_data |> 
+  distinct(Assay, UniProt) |>  
+  pull(UniProt) |> 
+  unique()
+
+selected_proteins1 <- sex_binary_results |> 
+  filter(follow_up_16 == 1) |> 
+  select(Assay) |> 
+  mutate(my_group = "protein_16")
+
+selected_proteins2 <- sex_binary_results |> 
+  filter(follow_up_24 == 1) |> 
+  select(Assay) |> 
+  mutate(my_group = "protein_24")
+
+selected_proteins3 <- sex_binary_results |> 
+  filter(follow_up_16 == 1 & follow_up_24 == 1) |> 
+  select(Assay) |> 
+  mutate(my_group = "protein_16_24")
+
+selected_proteins <- bind_rows(selected_proteins1, selected_proteins2, selected_proteins3) |> 
+  left_join(BAMSE_data |> distinct(Assay, UniProt), by = "Assay")
+
+rm(selected_proteins1, selected_proteins2, selected_proteins3)
+
+enrichment_result_sex <- selected_proteins |> 
+  group_by(my_group) |> 
+  summarise(
+    ego = list(
+      safe_enrichGO(
+        gene = UniProt,
+        universe = universe_proteins,
+        OrgDb = org.Hs.eg.db,
+        keyType = "UNIPROT",  
+        ont = "BP",
+        pAdjustMethod = "BH",
+        pvalueCutoff = 0.05,
+        qvalueCutoff = 0.2,
+        readable = TRUE
+      )
+    ),
+    .groups = "drop"
+  )
+
+
+###
+enrichment_result_sex  |> 
+  mutate(ego_df = map(ego, ~ as_tibble(.x@result))) |> 
+  select(my_group, ego_df)  |> 
+  unnest(ego_df) |> 
+  group_by(my_group)  |> 
+  slice_min(order_by = pvalue, n = 10)  |> 
+  ungroup() |> 
+  arrange(my_group, pvalue) |> 
+  select(my_group, ID, Description, pvalue, p.adjust, Count) |> 
+  mutate(p.adjust = format(p.adjust, scientific = TRUE, digits = 2, nsmall = 2)) |> 
+  mutate(pvalue = format(pvalue, scientific = TRUE, digits = 2, nsmall = 2)) |> 
+  rename("p-value raw" = pvalue, "p-value FDR" = p.adjust, "Number of proteins" = Count, "Protein set" = my_group) |> 
+  write.csv2(paste0("output/Table 3 ", Sys.Date(), ".csv"))
+
+
+## Supp info
+
+supptable5  <- enrichment_result_sex  |> 
+  mutate(ego_df = map(ego, ~ as_tibble(.x@result))) |> 
+  select(my_group, ego_df)  |> 
+  unnest(ego_df) |> 
+  filter(pvalue < 0.05) |> 
+  arrange(my_group, pvalue) |> 
+  select(my_group, ID, Description, pvalue, p.adjust, Count, geneID) |> 
+  mutate(p.adjust = format(p.adjust, scientific = TRUE, digits = 2, nsmall = 2)) |> 
+  mutate(pvalue = format(pvalue, scientific = TRUE, digits = 2, nsmall = 2)) |> 
+  rename("p-value raw" = pvalue, "p-value FDR" = p.adjust, "Number of proteins" = Count, "Protein set" = my_group) 
+
+```
+
+\newpage
+
+# Sex-related-differences in proteins after adjustment for covariates
+
+```{r}
+proteins_16_24 <- sex_binary_results |> 
+  filter(follow_up_16 == 1 & follow_up_24 == 1) |> 
+  pull(Assay)
+
+proteins_16 <- sex_binary_results |> 
+  filter(follow_up_16 == 1) |> 
+  pull(Assay)
+
+proteins_24 <- sex_binary_results |> 
+  filter(follow_up_24 == 1) |> 
+  pull(Assay)
+
+data_16 <- BAMSE_data |>
+  select(daid, subject_id, Assay, NPX, follow_up, sex) |> 
+  filter(follow_up %in% c(16)) |>  
+  left_join(extra_meta_data |> select(subject_id, snuff_16, smoke_16, bmi_z_score_16y, erytrocyt_16, leukocyt_16), by = "subject_id") |> 
+  rename(snuff = snuff_16, smoke = smoke_16, bmi = bmi_z_score_16y, erytrocyt = erytrocyt_16, leukocyt = leukocyt_16) |> 
+  mutate(snuff = factor(snuff), smoke = factor(smoke))
+
+data_24 <- BAMSE_data |>
+  select(daid, subject_id, Assay, NPX, follow_up, sex) |> 
+  filter(follow_up %in% c(24)) |> 
+  left_join(extra_meta_data |> select(subject_id, snuff_24, smoke_24, bmi_z_score_24y, bioimp_body_fat, erytrocyt_24, leukocyt_24), by = "subject_id") |> 
+  rename(snuff = snuff_24, smoke = smoke_24, bmi = bmi_z_score_24y, erytrocyt = erytrocyt_24, leukocyt = leukocyt_24) |> 
+  mutate(snuff = factor(snuff), smoke = factor(smoke))
+
+extract_number_significant <- function(my_data, my_proteins, my_model) {
+    my_data  |>
+    filter(Assay %in% my_proteins) |> 
+    group_by(Assay)  |>  
+    do(tidy(lm(my_model, data = .))) |> 
+    filter(term == "sexM") |> 
+    filter(p.value < p_value_cutoff) |> 
+    pull(Assay) |> 
+    length()
+}
+
+model_1 <- NPX ~ sex + bmi + snuff + smoke
+model_2 <- NPX ~ sex + bioimp_body_fat + snuff + smoke
+model_3 <- NPX ~ sex + erytrocyt + leukocyt
+
+extract_number_significant(data_16, proteins_16_24, model_1)
+extract_number_significant(data_24, proteins_16_24, model_1)
+extract_number_significant(data_16, proteins_16, model_1)
+extract_number_significant(data_24, proteins_24, model_1)
+
+extract_number_significant(data_24, proteins_24, model_2)
+
+extract_number_significant(data_16, proteins_16_24, model_3)
+extract_number_significant(data_24, proteins_16_24, model_3)
+extract_number_significant(data_16, proteins_16, model_3)
+extract_number_significant(data_24, proteins_24, model_3)
+
+# Extract proteins
+extract_significant_assays_sex <- function(my_data, my_proteins, my_model) {
+    my_data  |>
+    filter(Assay %in% my_proteins) |> 
+    group_by(Assay)  |>  
+    do(tidy(lm(my_model, data = .))) |> 
+    filter(term == "sexM") |> 
+    filter(p.value < p_value_cutoff) |> 
+    pull(Assay) 
+}
+
+proteins_associated_sex_16_24 <- intersect(extract_significant_assays_sex(data_16, proteins_16_24, model_1),
+          extract_significant_assays_sex(data_24, proteins_16_24, model_1)) 
+
+extract_significant_assays_bmi <- function(my_data, my_proteins, my_model) {
+    my_data  |>
+    filter(Assay %in% my_proteins) |> 
+    group_by(Assay)  |>  
+    do(tidy(lm(my_model, data = .))) |> 
+    filter(term == "bmi") |> 
+    filter(p.value < p_value_cutoff) |> 
+    pull(Assay) 
+}
+
+proteins_associated_bmi <- intersect(extract_significant_assays_bmi(data_16, proteins_16_24, model_1),
+extract_significant_assays_bmi(data_24, proteins_16_24, model_1))
+
+extract_significant_assays_bodyfat <- function(my_data, my_proteins, my_model) {
+    my_data  |>
+    filter(Assay %in% my_proteins) |> 
+    group_by(Assay)  |>  
+    do(tidy(lm(my_model, data = .))) |> 
+    filter(term == "bioimp_body_fat") |> 
+    filter(p.value < p_value_cutoff) |> 
+    pull(Assay) 
+}
+
+proteins_associated_bodyfat <- extract_significant_assays_bodyfat(data_24, proteins_24, model_2)
+
+
+proteins_associated_bodyfat_w_p_value <- data_24  |>
+    filter(Assay %in% proteins_24) |> 
+    group_by(Assay)  |>  
+    do(tidy(lm(model_2, data = .))) |> 
+    filter(term == "bioimp_body_fat") |> 
+    filter(p.value < p_value_cutoff) |> 
+    select(Assay, p.value) |> 
+    arrange(p.value)
+
+supptable6  <- proteins_associated_bodyfat_w_p_value |>   
+  ungroup() |> 
+  mutate(p.value = format(p.value, scientific = TRUE, digits = 2, nsmall = 2)) |>
+  left_join(BAMSE_data |> distinct(Assay, Gene_desc), by= "Assay") |>
+  mutate(Gene_desc = case_when(Assay == "DEFB4A_DEFB4B" ~ "Defensin beta 4A/B", TRUE ~ Gene_desc)) |> 
+  rename("p-value" = p.value, "Protein name" = Gene_desc) |>  
+  mutate("Significantly associated with sex after adjustments" = case_when(Assay %in% extract_significant_assays_sex(data_24, proteins_24, model_2) ~ "Yes", TRUE ~ "No")) 
+
+```
+
+
+
+\newpage
+
+## Figure 5
+```{r}
+
+# Figure 5A
+selected_proteins <- proteins_associated_bmi
+
+data_to_plot <- extra_meta_data |> 
+  select(subject_id, bmi_z_score_4y, bmi_z_score_8y, bmi_z_score_16y, bmi_z_score_24y) |> 
+  pivot_longer(-subject_id, names_to = "follow_up", values_to = "bmi") |> 
+  mutate(follow_up = case_when(follow_up == "bmi_z_score_4y" ~ 4,
+                               follow_up == "bmi_z_score_8y" ~ 8,
+                               follow_up == "bmi_z_score_16y" ~ 16,
+                               follow_up == "bmi_z_score_24y" ~ 24) |> factor()) |> 
+  left_join(BAMSE_data |> distinct(daid, subject_id, follow_up), by = c("subject_id","follow_up")) |> 
+  left_join(BAMSE_data |>
+              distinct(daid, Assay, NPX, sex) |> 
+              filter(Assay %in% selected_proteins),
+            by = c("daid")) |> 
+  filter(!is.na(bmi)) |> 
+  mutate(sex = as.character(sex)) |> 
+  mutate(sex = case_when(sex == "F" ~ "Female", 
+                         sex == "M" ~"Male")) |> 
+  mutate(follow_up = paste0("Follow-up ", follow_up) |> factor(levels = c("Follow-up 4", "Follow-up 8","Follow-up 16", "Follow-up 24" )))
+
+p1 <- 
+  ggplot(data_to_plot, aes(x = bmi, y = NPX, color = sex, fill = sex))+
+  geom_point(size = 1, alpha = 0.7, shape = 16) +
+  labs(x="BMI (z-scores)", y = "NPX")+
+  scale_fill_manual(values=c(col_F, col_M))+
+  scale_color_manual(values=c(col_F, col_M))+
+  scale_y_continuous(expand = expansion(mult = 0.3))+
+  stat_cor(method = "spearman", cor.coef.name = "rho", size = 2.5)+
+  facet_grid(rows = vars(Assay), cols = vars(follow_up), scales = "free_y")+
+  theme_bw()+
+  theme(legend.position = "bottom",
+        legend.title = element_blank(), 
+        axis.text = element_text(size = 8),
+        aspect.ratio = 1)
+
+suppdata$fig5a  <- data_to_plot  |> select(Assay, follow_up,  NPX, bmi, sex)  |> arrange(Assay, follow_up, NPX)
+
+# Figure 5B
+selected_proteins <- proteins_associated_bodyfat_w_p_value |> ungroup() |> slice_min(order_by = p.value, n = 8) |> pull(Assay)
+
+data_to_plot <- BAMSE_data |>
+  select(daid, subject_id, Assay, NPX, follow_up, sex) |> 
+  filter(follow_up %in% c(24)) |> 
+  filter(Assay %in% selected_proteins) |>
+  left_join(extra_meta_data |> select(subject_id, bioimp_body_fat), by = "subject_id") |> 
+  filter(!is.na(bioimp_body_fat)) |> 
+  mutate(sex = as.character(sex)) |> 
+  mutate(sex = case_when(sex == "F" ~ "Female", 
+                         sex == "M" ~"Male"))
+
+
+p2 <- 
+  ggplot(data_to_plot, aes(x = bioimp_body_fat, y = NPX, color = sex, fill = sex))+
+  geom_point(size = 1, alpha = 0.7, shape = 16) +
+  labs(x="Body fat %", y = "NPX")+
+  scale_fill_manual(values=c(col_F, col_M))+
+  scale_color_manual(values=c(col_F, col_M))+
+  scale_y_continuous(expand = expansion(mult = 0.3))+
+  stat_cor(method = "spearman", cor.coef.name = "rho", size = 2.5)+
+  facet_wrap(~Assay, ncol = 4, scales = "free")+
+  theme_bw()+
+  theme(legend.position = "none",
+        legend.title = element_blank(), 
+        axis.text = element_text(size = 8),
+        aspect.ratio = 1)
+
+
+suppdata$fig5b  <- data_to_plot  |> select(Assay, NPX, bioimp_body_fat, sex)  |> arrange(Assay, NPX)
+
+# Arrange and save Figure 5
+p <- ggarrange(p1,p2, nrow = 2, heights = c(3, 2) ,labels = c("a", "b"))
+
+ggsave(paste0("output/Figure 5 ", Sys.Date(),".pdf"), height = 10, width = 8)
+```
+
+\newpage
+# Supptables
+
+## Supp table 1
+```{r}
+supptables$Supplementary_table_1 <- BAMSE_data |> 
+  distinct(Assay, OlinkID, UniProt) |> 
+  left_join(age_signif_proteins |> 
+              select(Assay, estimate, p_value, Adjusted_pval, comparison) |>
+              mutate(comparison = case_when(comparison == "Follow-up 4 vs 8" ~ "follow-up 4 vs 8",
+                                            comparison == "Follow-up 8 vs 16" ~ "follow-up 8 vs 16",
+                                            comparison == "Follow-up 16 vs 24" ~ "follow-up 16 vs 24")) |> 
+              mutate(Adjusted_pval = format(Adjusted_pval, scientific = TRUE, digits = 2, nsmall = 2)) |> 
+              mutate(p_value = format(p_value, scientific = TRUE, digits = 2, nsmall = 2)) |> 
+              rename("p-value FDR" = Adjusted_pval, "p-value raw" = p_value, "fold change" = estimate) |> 
+              pivot_wider(names_from = comparison, values_from = c("p-value raw", "p-value FDR","fold change"), names_sep = " "), by = "Assay") |> 
+    relocate(Assay, UniProt, OlinkID, 
+             `p-value raw follow-up 4 vs 8`,`p-value FDR follow-up 4 vs 8`, `fold change follow-up 4 vs 8`, 
+             `p-value raw follow-up 8 vs 16`, `p-value FDR follow-up 8 vs 16`,`fold change follow-up 8 vs 16`, 
+             `p-value raw follow-up 16 vs 24`,`p-value FDR follow-up 16 vs 24`,`fold change follow-up 16 vs 24`) |> left_join(saved_protein_cluster, by = "Assay")
+
+```
+
+## Supp table 2
+```{r}
+supptables$Supplementary_table_2 <- supptable2 
+```
+
+## Supp table 3
+```{r}
+supptables$Supplementary_table_3 <- 
+  bind_rows(age_signif_proteins_F |> 
+              select(Assay, estimate, p_value, Adjusted_pval, comparison) |>
+              mutate(comparison = case_when(comparison == "Follow-up 4 vs 8" ~ "females follow-up 4 vs 8",
+                                            comparison == "Follow-up 8 vs 16" ~ "females follow-up 8 vs 16",
+                                            comparison == "Follow-up 16 vs 24" ~ "females follow-up 16 vs 24")),
+            age_signif_proteins_M |> 
+              select(Assay, estimate, p_value, Adjusted_pval, comparison) |>
+              mutate(comparison = case_when(comparison == "Follow-up 4 vs 8" ~ "males follow-up 4 vs 8",
+                                            comparison == "Follow-up 8 vs 16" ~ "males follow-up 8 vs 16",
+                                            comparison == "Follow-up 16 vs 24" ~ "males follow-up 16 vs 24"))) |> 
+  mutate(Adjusted_pval = format(Adjusted_pval, scientific = TRUE, digits = 2, nsmall = 2)) |> 
+  mutate(p_value = format(p_value, scientific = TRUE, digits = 2, nsmall = 2)) |>
+  rename("p-value FDR" = Adjusted_pval, "p-value raw" = p_value, "fold change" = estimate) |>
+  pivot_wider(names_from = comparison, values_from = c("p-value raw", "p-value FDR","fold change"), names_sep = " ") |> 
+  arrange(Assay) |> 
+  left_join(BAMSE_data |> distinct(Assay, OlinkID, UniProt), by = "Assay")  |> 
+  relocate(Assay, OlinkID, UniProt)
+
+```
+
+
+## Supp table 4 
+```{r}
+supptables$Supplementary_table_4 <- BAMSE_data |> 
+  distinct(Assay, OlinkID, UniProt) |> 
+  left_join(save_p_values_sex_including_raw_p |> 
+              select(Assay, estimate, p_value, Adjusted_pval, comparison) |> 
+              mutate(comparison = case_when(comparison == "Follow up 4" ~ "follow-up 4",
+                                            comparison == "Follow up 8" ~ "follow-up 8",
+                                            comparison == "Follow up 16" ~ "follow-up 16",
+                                            comparison == "Follow up 24" ~ "follow-up 24")) |> 
+              mutate(Adjusted_pval = format(Adjusted_pval, scientific = TRUE, digits = 2, nsmall = 2)) |> 
+  mutate(p_value = format(p_value, scientific = TRUE, digits = 2, nsmall = 2)) |> 
+              rename("p-value FDR" = Adjusted_pval, "p-value raw" = p_value, "fold change" = estimate) |>
+              mutate(comparison = paste0(comparison = paste0("female vs male (",comparison,")" ))) |> 
+              pivot_wider(names_from = comparison, values_from = c("p-value raw", "p-value FDR","fold change"), names_sep = " "), by = "Assay") |> 
+  
+    relocate(Assay, UniProt, OlinkID, 
+             `p-value raw female vs male (follow-up 4)`,`p-value FDR female vs male (follow-up 4)`, `fold change female vs male (follow-up 4)`, 
+             `p-value raw female vs male (follow-up 8)`,`p-value FDR female vs male (follow-up 8)`, `fold change female vs male (follow-up 8)`, 
+             `p-value raw female vs male (follow-up 16)`, `p-value FDR female vs male (follow-up 16)`, `fold change female vs male (follow-up 16)`, 
+             `p-value raw female vs male (follow-up 24)`, `p-value FDR female vs male (follow-up 24)`, `fold change female vs male (follow-up 24)`) 
+
+```
+## Supp table 5
+```{r}
+supptables$Supplementary_table_5 <- supptable5
+```
+
+
+## Supp table 6 
+```{r}
+supptables$Supplementary_table_6 <- supptable6 
+```
+
+
+## Write supplementary tables
+
+```{r}
+write_xlsx(supptables, path = paste0("output/Supplementary tables ", Sys.Date(), ".xlsx") )
+```
+
+# Write supplementary data
+```{r}
+write_xlsx(suppdata, path = paste0("output/Supplementary data ", Sys.Date(), ".xlsx") )
+```
+
+
+# Replication analysis of Liu et.al and Niu et.al
+```{r}
+
+protein_wide <- BAMSE_data %>%
+  dplyr::select(subject_id, follow_up, Assay,  age, sex,NPX) |>#age, sex,
+  group_by(subject_id, follow_up, Assay) %>%
+  
+  pivot_wider(names_from = Assay, values_from = NPX) |>
+  arrange(subject_id, follow_up) #%>%  # Order rows by subject_id, follow_up
+rownames(protein_wide)<-paste(protein_wide$subject_id, protein_wide$follow_up, sep = "_")
+
+
+
+Olink_Data_all<-protein_wide[,-c(1:4)]
+rownames(Olink_Data_all)<-rownames(protein_wide)
+cov<-protein_wide[,c(1:4)]
+rownames(cov)<-rownames(protein_wide)
+
+### inverse normal transformation INT
+inormal <- function(x)
+{
+  qnorm((rank(x, na.last = "keep") - 0.5) / sum(!is.na(x)))
+}
+
+### inverse normal transformation INT
+Data.H= as.data.frame(apply(t(Olink_Data_all), 1, inormal))
+
+
+ #Time-course expression analysis of significant proteins from mixed-effect model 
+ 
+tdat<-Olink_Data_all_zscore
+
+# Function to fit mixed model with Kenward-Roger correction
+f.RLM.Adjusted.Robust.par <- function(pcol, X) {
+  # Validate column index
+  if (!(pcol %in% seq_len(ncol(tdat)))) {
+    stop(paste("Error: Column index", pcol, "is out of bounds."))
+  }
+  
+  # Ensure `tdat` and `X` have matching rows
+  if (nrow(tdat) != nrow(X)) {
+    stop("Error: `tdat` and `X` must have the same number of rows!")
+  }
+  
+  # Bind protein data and covariates
+  D <- cbind(p = tdat[, pcol], X) %>% as.data.frame()
+  
+  # Fit models with Kenward–Roger correction
+  mod1 <- try(lmer(D[,1] ~ age + sex + (1 | subject_id), data = D), silent = TRUE)
+  
+  # Define default output structure
+  cf <- setNames(rep(NA, 3), c("Age_Estimate", "Age_Std.Error", "Age_p.value"))
+  
+  if (inherits(mod1, "try-error")) {
+    message("Model fitting failed for column: ", pcol)
+  } else {
+    cft1 <- tryCatch(coef(summary(mod1)), error = function(e) NULL)
+    
+    # Check if required predictors exist before extracting
+    if (!is.null(cft1)) {
+      cf[1:3] <- cft1["age", c("Estimate", "Std. Error", "Pr(>|t|)")]
+    }
+  }
+  
+  return(cf)
+}
+
+# parallel Processing Setup
+time0 <- Sys.time()
+num_cores <- detectCores() - 1  # Use all but 1 core
+c1 <- makePSOCKcluster(num_cores)
+
+# oad required libraries on worker nodes
+clusterEvalQ(c1, {
+  library(lme4)
+  library(lmerTest)
+  library(pbkrtest)
+  library(dplyr)
+})
+
+# xport required variables & function to worker nodes
+clusterExport(c1, c('f.RLM.Adjusted.Robust.par', 'cov', 'tdat'))
+
+# run models in parallel across proteins
+indiv.results.list <- parLapply(c1, 
+                                setNames(seq_len(ncol(tdat)), colnames(tdat)), 
+                                function(z) f.RLM.Adjusted.Robust.par(z, cov)
+)
+
+# top cluster after computation
+stopCluster(c1)
+
+# Compute time taken
+Sys.time() - time0
+
+# coerce the list back to a data.frame
+indiv.results<- ldply(lapply(indiv.results.list, rbind))
+colnames(indiv.results)<-c("Protein","coef", "sd", "P.value")
+indiv.results$FDR_BH<-p.adjust(indiv.results$P.value, "BH")
+dim(indiv.results[indiv.results$FDR_BH<0.05,])
+
+
+write.table(indiv.results, file ="Ageassociationmixedeffect.txt",col.names = TRUE, row.names = FALSE,sep = "\t",append=FALSE,quote =FALSE)
+
+
+
+#the overlap of  Niu et.al and Bergström et.al. mixed-effect model 
+
+
+library(ggplot2)
+library(irr)  # for Cohen's Kappa
+library(readxl)
+library(readr)
+Liu_Niu_Bergström_overlapping_age_sex <- read_excel("data/Liu_Niu_Bergström_overlapping_age_sex.xlsx", sheet = "Niu 2025 age")
+Age.rep<-Ageassociationmixedeffect %>% inner_join(Liu_Niu_Bergström_overlapping_age_sex[,c("Protein","Coef")],by="Protein")
+# Your data
+agree_df <- data.frame(
+  Set1 = Age.rep$Coef,
+  Set2_P = Age.rep$coef,
+  FDR_BH<-Age.rep$FDR_BH
+)
+
+# Agreement in direction
+agree_df$Direction <- ifelse(sign(agree_df$Set1) == sign(agree_df$Set2_P), "Same", "Opposite")
+
+# Spearman correlation
+cor_res <- cor.test(agree_df$Set1, agree_df$Set2_P, method = "spearman")
+
+rho <- cor_res$estimate
+p_val <-format.pval(cor_res$p.value, digits = 3, eps = 1e-16)
+
+cor_text <- paste0(
+  "Spearman \u03C1 = ", round(rho, 2),
+  "\nP-value = ", p_val
+)
+# Count observations per group
+dir_counts <- table(agree_df$Direction)
+
+
+
+agree_df$Direction <- ifelse(sign(agree_df$Set1) == sign(agree_df$Set2_P),
+                             "Same", "Opposite")
+
+agree_df$Significance <- ifelse(agree_df$FDR_BH < 0.05,
+                                "Significant", "Not significant")
+
+# Create labels with counts
+agree_df$ColorGroup <- with(
+  agree_df,
+  ifelse(
+    Significance == "Not significant",
+    "Not significant",
+    Direction
+  )
+)
+
+# Fix legend order
+agree_df$ColorGroup <- factor(
+  agree_df$ColorGroup,
+  levels = c("Same", "Opposite", "Not significant")
+)
+
+
+
+# Count per color group
+group_counts <- table(agree_df$ColorGroup)
+
+# Create legend labels with n
+legend_labels <- c(
+  "Same" = paste0("Same direction (FDR < 0.05, n = ", group_counts["Same"], ")"),
+  "Opposite" = paste0("Opposite direction (FDR < 0.05, n = ", group_counts["Opposite"], ")"),
+  "Not significant" = paste0("Not significant in  Bergström et al.(n = ", group_counts["Not significant"], ")")
+)
+
+# Scatter plot
+p <- ggplot(agree_df, aes(x = Set1, y = Set2_P, color = ColorGroup)) +
+  geom_point(size = 4) +
+  geom_vline(xintercept = 0, linetype = "dotted", color = "black") +
+  geom_hline(yintercept = 0, linetype = "dotted", color = "black") +
+  annotate(
+    "text",
+    x = min(agree_df$Set1),
+    y = max(agree_df$Set2_P),
+    label = cor_text,
+    hjust = 0,
+    vjust = 1,
+    size = 5
+  ) +
+  labs(
+    title = "Consistency of age-associated protein effects between Niu et al. and Bergström et al.",
+    x = expression(log[2]~FC~"("~italic(Niu~et~al.)~")"),
+    y = expression(log[2]~FC~"("~italic(Bergström~et~al.)~")"),
+    color = "Effect direction"
+  ) +
+  scale_color_manual(
+    values = c(
+      "Same" = "green",
+      "Opposite" = "red",
+      "Not significant" = "grey70"
+    ),
+    labels = legend_labels
+  ) +
+  theme_minimal()
+
+print(p)
+
+ggsave(
+  filename = "agreement_plotwith_Niu.pdf",
+  plot = p,
+  width = 12,
+  height =8,
+  units = "in",
+  device = cairo_pdf
+)
+
+
+
+# the overlap of  Liu et.al and Bergström et.al. mixed-effect model 
+
+Liu_GOterms_agepatterns <- read_excel("data/Liu_GOterms_agepatterns.xlsx", 
+                                      sheet = "Table S2", skip = 2)
+LuiData<-Liu_GOterms_agepatterns[,c(4,148,150,151,152,153,154)]
+LuiData<-LuiData[complete.cases(LuiData),]
+colnames(LuiData)<-c("Protein","Protein IDs","Con_Slope","Con_Quad","Con_Linear_pvalue","Con_Quad_pvalue","NP_trends" )
+LuiData<-LuiData[which(LuiData$Con_Linear_pvalue<0.05),]
+Age.rep<-Ageassociationmixedeffect %>% inner_join(LuiData[,c("Protein","Con_Slope")],by="Protein")
+# Your data
+agree_df <- data.frame(
+  Set1 = Age.rep$Con_Slope,
+  Set2_P = Age.rep$coef,
+  FDR_BH<-Age.rep$FDR_BH
+)
+
+# Agreement in direction
+agree_df$Direction <- ifelse(sign(agree_df$Set1) == sign(agree_df$Set2_P), "Same", "Opposite")
+
+# Spearman correlation
+cor_res <- cor.test(agree_df$Set1, agree_df$Set2_P, method = "spearman")
+
+rho <- cor_res$estimate
+p_val <-format.pval(cor_res$p.value, digits = 3, eps = 1e-16)
+
+cor_text <- paste0(
+  "Spearman \u03C1 = ", round(rho, 2),
+  "\nP-value = ", p_val
+)
+# Count observations per group
+dir_counts <- table(agree_df$Direction)
+
+
+agree_df$Direction <- ifelse(sign(agree_df$Set1) == sign(agree_df$Set2_P),
+                             "Same", "Opposite")
+
+agree_df$Significance <- ifelse(agree_df$FDR_BH < 0.05,
+                                "Significant", "Not significant")
+
+
+# Create labels with counts
+agree_df$ColorGroup <- with(
+  agree_df,
+  ifelse(
+    Significance == "Not significant",
+    "Not significant",
+    Direction
+  )
+)
+
+# Fix legend order
+agree_df$ColorGroup <- factor(
+  agree_df$ColorGroup,
+  levels = c("Same", "Opposite", "Not significant")
+)
+
+
+# Count per color group
+group_counts <- table(agree_df$ColorGroup)
+
+# Create legend labels with n
+legend_labels <- c(
+  "Same" = paste0("Same direction (FDR < 0.05, n = ", group_counts["Same"], ")"),
+  "Opposite" = paste0("Opposite direction (FDR < 0.05, n = ", group_counts["Opposite"], ")"),
+  "Not significant" = paste0("Not significant in  Bergström et al.(n = ", group_counts["Not significant"], ")")
+)
+
+# Scatter plot
+p <- ggplot(agree_df, aes(x = Set1, y = Set2_P, color = ColorGroup)) +
+  geom_point(size = 4) +
+  geom_vline(xintercept = 0, linetype = "dotted", color = "black") +
+  geom_hline(yintercept = 0, linetype = "dotted", color = "black") +
+  annotate(
+    "text",
+    x = min(agree_df$Set1),
+    y = max(agree_df$Set2_P),
+    label = cor_text,
+    hjust = 0,
+    vjust = 1,
+    size = 5
+  ) +
+  labs(
+    title = "Consistency of age-associated protein effects between Liu et al. and Bergström et al.",
+    x = expression(log[2]~FC~"("~italic(Liu~et~al.)~")"),
+    y = expression(log[2]~FC~"("~italic(Bergström~et~al.)~")"),
+    color = "Effect direction"
+  ) +
+  scale_color_manual(
+    values = c(
+      "Same" = "green",
+      "Opposite" = "red",
+      "Not significant" = "grey70"
+    ),
+    labels = legend_labels
+  ) +
+  theme_minimal()
+
+print(p)
+
+ggsave(
+  filename = "agreement_plotwith_Niu.pdf",
+  plot = p,
+  width = 12,
+  height =8,
+  units = "in",
+  device = cairo_pdf
+)
+
+
+
+
+```
+
+
+
+
+
