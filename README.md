@@ -1,12 +1,12 @@
-#BAMSE Childhood Profiling
+# BAMSE Childhood Profiling
 
 Code accompanying the manuscript:
 “Longitudinal protein profiling of blood during childhood into early adulthood”
 
-##Overview
+## Overview
 This repository contains the code used to analyze longitudinal plasma proteomics data from the BAMSE cohort, with samples collected at ages 4, 8, 16, and 24 years.
 
-##Analyses
+## Analyses
 The analyses include:
 - Overview of sample distribution and PCA across follow-ups
 - Paired protein comparisons between consecutive follow-ups (4 vs 8, 8 vs 16, 16 vs 24)
