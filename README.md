@@ -1,3 +1,5 @@
+[![DOI](https://zenodo.org/badge/1185537947.svg)](https://doi.org/10.5281/zenodo.19099156)
+
 # BAMSE Childhood Profiling
 
 Code accompanying the manuscript:
